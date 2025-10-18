@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-dsl"
+version = "0.0.1"
+requires-python = ">=3.11"
+dependencies = ["typer==0.12.5", "click==8.1.7", "rich==13.9.3"]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+agent-dsl = "agent_dsl.cli:main"

@@ -5,3 +5,5 @@
 .vscode/
 dist/
 build/
+*.egg-info/
+*.egg
