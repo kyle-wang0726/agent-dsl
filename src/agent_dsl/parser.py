@@ -4,8 +4,8 @@ from typing import Dict, List
 
 @dataclass
 class Action:
-    kind: str                # "reply" | "goto"
-    value: str               # text or target state
+    kind: str                 # "reply" | "goto" | "ask" | "set" | "if_goto"
+    args: Dict[str, str] = field(default_factory=dict)
 
 @dataclass
 class State:
@@ -21,13 +21,22 @@ class Flow:
 class Program:
     flows: Dict[str, Flow] = field(default_factory=dict)
 
+def _unquote(val: str) -> str:
+    val = val.strip()
+    if val.startswith('"') and val.endswith('"'):
+        return val[1:-1]
+    return val
+
 def parse(text: str) -> Program:
     """
-    极简行式 DSL 解析器：
+    行式 DSL：
       flow <name>
       state <name>
-        reply "text"
-        goto <state-name>
+        reply "text with {{var}}"
+        ask <var> "prompt"
+        set <var> = "value"
+        if <var> == "value" goto <state>
+        goto <state>
     """
     prog = Program()
     cur_flow: Flow | None = None
@@ -53,21 +62,48 @@ def parse(text: str) -> Program:
             cur_flow.states[name] = cur_state
             continue
 
+        if not cur_state:
+            raise ValueError(f"语句必须出现在 state 内部：{line}")
+
         if line.startswith("reply "):
-            if not cur_state:
-                raise ValueError("reply 必须出现在 state 内部")
-            # 支持 reply "xxx"
-            val = line[len("reply "):].strip()
-            if val.startswith('"') and val.endswith('"'):
-                val = val[1:-1]
-            cur_state.actions.append(Action(kind="reply", value=val))
+            val = _unquote(line[len("reply "):])
+            cur_state.actions.append(Action(kind="reply", args={"text": val}))
             continue
 
         if line.startswith("goto "):
-            if not cur_state:
-                raise ValueError("goto 必须出现在 state 内部")
             target = line.split(" ", 1)[1].strip()
-            cur_state.actions.append(Action(kind="goto", value=target))
+            cur_state.actions.append(Action(kind="goto", args={"target": target}))
+            continue
+
+        if line.startswith("ask "):
+            # ask <var> "prompt"
+            rest = line[len("ask "):].strip()
+            var, prompt = rest.split(" ", 1)
+            cur_state.actions.append(Action(kind="ask", args={"var": var, "prompt": _unquote(prompt)}))
+            continue
+
+        if line.startswith("set "):
+            # set <var> = "value"
+            rest = line[len("set "):].strip()
+            if "=" not in rest:
+                raise ValueError("set 语法：set <var> = \"value\"")
+            var, val = rest.split("=", 1)
+            cur_state.actions.append(Action(kind="set", args={"var": var.strip(), "value": _unquote(val)}))
+            continue
+
+        if line.startswith("if "):
+            # if <var> == "value" goto <state>
+            rest = line[len("if "):].strip()
+            # 非健壮解析，但覆盖我们当前语法即可
+            # 拆: <left> == <right> goto <state>
+            if " goto " not in rest or "==" not in rest:
+                raise ValueError('if 语法：if <var> == "value" goto <state>')
+            cond_part, target = rest.split(" goto ", 1)
+            left, right = cond_part.split("==", 1)
+            cur_state.actions.append(Action(
+                kind="if_goto",
+                args={"left": left.strip(), "right": _unquote(right), "target": target.strip()}
+            ))
             continue
 
         raise ValueError(f"无法识别的语句：{line}")

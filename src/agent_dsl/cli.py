@@ -18,22 +18,34 @@ def hello(name: str) -> None:
 def parse_cmd(script: Path) -> None:
     text = script.read_text(encoding="utf-8")
     prog = parse_text(text)
-    # 只做一个可读的摘要
     for flow_name, flow in prog.flows.items():
         click.echo(f"[flow] {flow_name}")
         for st_name, st in flow.states.items():
             click.echo(f"  [state] {st_name}")
             for a in st.actions:
-                click.echo(f"    - {a.kind}: {a.value}")
+                click.echo(f"    - {a.kind}: {a.args}")
 
 @cli.command("run", help="Run a DSL file from its first state.")
 @click.argument("script", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--flow", default="main", show_default=True, help="Flow name to run")
-def run_cmd(script: Path, flow: str) -> None:
+@click.option("--var", multiple=True, help="预置变量，形如 name=Alice，可重复传入多次")
+def run_cmd(script: Path, flow: str, var: tuple[str, ...]) -> None:
     text = script.read_text(encoding="utf-8")
     prog = parse_text(text)
-    eng = Engine(prog, flow_name=flow)
-    for line in eng.step_all():
+    ctx: dict[str, str] = {}
+    for item in var:
+        if "=" not in item:
+            raise click.UsageError(f"--var 需要 name=value 形式，收到：{item}")
+        k, v = item.split("=", 1)
+        ctx[k] = v
+
+    def ask_fn(k: str, prompt: str) -> str:
+        # 让提示更友好
+        return click.prompt(prompt, type=str)
+
+    eng = Engine(prog, flow_name=flow, context=ctx, ask_fn=ask_fn)
+
+    for line in eng.run_iter():
         click.echo(line)
 
 def main() -> None:
