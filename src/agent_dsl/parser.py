@@ -50,7 +50,7 @@ def parse(text: str) -> Program:
                 i += 1
                 continue
 
-            # 子块终止信号：} / } elif ... { / } else { / state ... / flow ...
+            # 子块终止信号
             if (raw == "}" or raw.startswith("} elif") or raw.startswith("} else")
                 or raw.startswith("state ") or raw.startswith("flow ")):
                 break
@@ -72,37 +72,32 @@ def parse(text: str) -> Program:
                 if i >= n:
                     raise ValueError("缺少 if 的右括号 '}'")
 
-                # 消费 if 的右括号
                 cur = lines[i].strip()
                 if cur == "}":
                     i += 1
                 elif cur.startswith("} elif") or cur.startswith("} else"):
-                    # 不消费，交给下面的 elif/else 逻辑统一处理
                     pass
                 else:
                     raise ValueError("缺少 if 的右括号 '}'")
 
-                # 收集 elif 链
+                # 收集 elif
                 branches = [{"cond": cond_if, "actions": then_actions}]
                 while i < n:
                     look = lines[i].strip()
-                    # 同行 "} elif xxx {" → 跳过本行，等价于新起一段 "elif xxx {"
                     if look.startswith("} elif"):
-                        # 提取条件
                         part = look[len("} elif"):].strip()
                         if not part.endswith("{"):
                             raise ValueError("elif 语法错误，应为 `} elif <cond> {`")
                         cond = part[:-1].strip()
                         i += 1
-                    elif _ELIF_HEAD.match(look):
-                        m2 = _ELIF_HEAD.match(look)
-                        assert m2 is not None    # 告诉类型检查器这里不会是 None
-                        cond = m2.group(1).strip()
-                        i += 1
                     else:
-                        break
+                        m2 = _ELIF_HEAD.match(look)
+                        if m2:
+                            cond = m2.group(1).strip()
+                            i += 1
+                        else:
+                            break
 
-                    # 解析本次 elif 块
                     elif_actions: List[Action] = []
                     while i < n and not lines[i].strip().startswith("}"):
                         sub = parse_block_actions()
@@ -159,8 +154,8 @@ def parse(text: str) -> Program:
                         i += 1
 
                 actions.append(Action("if_chain", {
-                    "branches": branches,   # list of {"cond": str, "actions": List[Action]}
-                    "else": else_actions    # or None
+                    "branches": branches,
+                    "else": else_actions
                 }))
                 continue
 
@@ -185,11 +180,17 @@ def parse(text: str) -> Program:
                 continue
 
             if raw.startswith("set "):
+                # 新：右侧可以是字符串常量或任意表达式
                 rest = raw[len("set "):].strip()
                 if "=" not in rest:
-                    raise ValueError('set 语法: set <var> = "value"')
-                var, val = rest.split("=", 1)
-                actions.append(Action("set", {"var": var.strip(), "value": _unquote(val)}))
+                    raise ValueError('set 语法: set <var> = <expr或"字符串">')
+                var, rhs = rest.split("=", 1)
+                var = var.strip()
+                rhs = rhs.strip()
+                if rhs.startswith('"') and rhs.endswith('"'):
+                    actions.append(Action("set", {"var": var, "value": _unquote(rhs)}))
+                else:
+                    actions.append(Action("set_expr", {"var": var, "expr": rhs}))
                 i += 1
                 continue
 
@@ -234,7 +235,6 @@ def parse(text: str) -> Program:
             flow = Flow(flow_name)
             prog.flows[flow_name] = flow
             i += 1
-            # 读 state
             while i < n:
                 ln = lines[i].strip()
                 if ln.startswith("state "):
