@@ -1,4 +1,3 @@
-# src/agent_dsl/cli.py
 import json
 from pathlib import Path
 import click
@@ -6,27 +5,9 @@ import click
 from .parser import parse as parse_text
 from .runtime import Engine
 
-
 @click.group(help="Agent DSL command-line tool.")
 def cli() -> None:
     pass
-
-@cli.command("hello", help="Say hello.")
-@click.option("--name", "-n", default="world", show_default=True, help="Name to greet")
-def hello(name: str) -> None:
-    click.echo(f"Hello, {name}!")
-
-@cli.command("parse", help="Parse a DSL file and show the structure.")
-@click.argument("script", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-def parse_cmd(script: Path) -> None:
-    text = script.read_text(encoding="utf-8")
-    prog = parse_text(text)
-    for flow_name, flow in prog.flows.items():
-        click.echo(f"[flow] {flow_name}")
-        for st_name, st in flow.states.items():
-            click.echo(f"  [state] {st_name}")
-            for a in st.actions:
-                click.echo(f"    - {a.kind}: {a.args}")
 
 @cli.command("run", help="Run a DSL file from its first state.")
 @click.argument("script", type=click.Path(exists=True, dir_okay=False, path_type=Path))
@@ -35,11 +16,13 @@ def parse_cmd(script: Path) -> None:
 @click.option("--data", type=click.Path(dir_okay=False, path_type=Path),
               help="上下文 JSON 文件；启动时加载，结束时保存")
 @click.option("--no-save", is_flag=True, help="与 --data 同用时，运行结束不回写上下文")
-def run_cmd(script: Path, flow: str, var: tuple[str, ...], data: Path | None, no_save: bool) -> None:
+@click.option("--llm", type=click.Choice(["none", "deepseek"]), default="none",
+              show_default=True, help="是否启用LLM意图识别")
+def run_cmd(script: Path, flow: str, var: tuple[str, ...], data: Path | None,
+            no_save: bool, llm: str) -> None:
     text = script.read_text(encoding="utf-8")
     prog = parse_text(text)
 
-    # 解析 --var
     ctx: dict[str, str] = {}
     for item in var:
         if "=" not in item:
@@ -47,26 +30,23 @@ def run_cmd(script: Path, flow: str, var: tuple[str, ...], data: Path | None, no
         k, v = item.split("=", 1)
         ctx[k] = v
 
-    # ✅ 若指定 --data，先把 JSON 载入上下文
-    if data:
-        if data.exists():
-            try:
-                raw = json.loads(data.read_text(encoding="utf-8") or "{}")
-                if isinstance(raw, dict):
-                    ctx.update({k: str(v) for k, v in raw.items()})
-            except Exception:
-                pass
+    if data and data.exists():
+        try:
+            raw = json.loads(data.read_text(encoding="utf-8") or "{}")
+            if isinstance(raw, dict):
+                ctx.update({k: str(v) for k, v in raw.items()})
+        except Exception:
+            pass
 
     def ask_fn(k: str, prompt: str) -> str:
         return click.prompt(prompt, type=str)
 
-    eng = Engine(prog, flow_name=flow, context=ctx, ask_fn=ask_fn)
+    use_llm = (llm == "deepseek")
+    eng = Engine(prog, flow_name=flow, context=ctx, ask_fn=ask_fn, use_llm=use_llm)
 
-    # 流式输出
     for line in eng.run_iter():
         click.echo(line)
 
-    # ✅ 运行结束：如指定 --data 且未禁用保存，把上下文写回
     if data and not no_save:
         data.parent.mkdir(parents=True, exist_ok=True)
         data.write_text(json.dumps(eng.ctx, ensure_ascii=False, indent=2), encoding="utf-8")
