@@ -133,15 +133,11 @@ def parse(text: str) -> Program:
                         i += 1  # 消费 else 的 '}'
 
 
+                lhs, op, rhs = m.group(1).strip(), m.group(2), m.group(3).strip()
+
                 actions.append(Action(
                     kind="if_block",
-                    args={
-                        "left": lhs,
-                        "op": op,
-                        "right": rhs,
-                        "then": then_actions,
-                        "else": else_actions
-                    }
+                    args={"left": lhs, "op": op, "right": rhs, "then": then_actions, "else": else_actions}
                 ))
                 continue
 
