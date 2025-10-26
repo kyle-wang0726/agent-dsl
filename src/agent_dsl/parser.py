@@ -105,7 +105,22 @@ def parse(text: str) -> Program:
                 args={"left": left.strip(), "right": _unquote(right), "target": target.strip()}
             ))
             continue
+        
+        if line.startswith("save "):
+            rest = line[len("save "):].strip()
+            if " to " not in rest:
+                raise ValueError('save 语法：save <var> to "file.json"')
+            var, path = rest.split(" to ", 1)
+            cur_state.actions.append(Action(kind="save", args={"var": var.strip(), "path": _unquote(path)}))
+            continue
 
+        if line.startswith("load "):
+            rest = line[len("load "):].strip()
+            if " from " not in rest:
+                raise ValueError('load 语法：load <var> from "file.json"')
+            var, path = rest.split(" from ", 1)
+            cur_state.actions.append(Action(kind="load", args={"var": var.strip(), "path": _unquote(path)}))
+            continue
         raise ValueError(f"无法识别的语句：{line}")
 
     if not prog.flows:

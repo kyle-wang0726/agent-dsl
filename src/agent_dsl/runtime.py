@@ -1,7 +1,11 @@
 # src/agent_dsl/runtime.py
-from typing import List, Dict, Iterable
+from typing import Iterable, Dict
+import json
 import re
-from .parser import Program, Flow, Action
+from pathlib import Path
+
+from .parser import Program, Flow
+
 
 _VAR_PATTERN = re.compile(r"\{\{(\w+)\}\}")
 
@@ -64,6 +68,34 @@ class Engine:
                     self.state_name = target
                     jumped = True
                     break
+                elif k == "save":
+                    var, path = a["var"], a["path"]
+                    p = Path(path)
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    data = {}
+                    if p.exists():
+                        try:
+                            data = json.loads(p.read_text(encoding="utf-8") or "{}")
+                        except Exception:
+                            data = {}
+                    # 统一转成字符串存
+                    data[var] = str(self.ctx.get(var, ""))
+                    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+                elif k == "load":
+                    var, path = a["var"], a["path"]
+                    p = Path(path)
+                    if p.exists():
+                        try:
+                            data = json.loads(p.read_text(encoding="utf-8"))
+                            if isinstance(data, dict) and var in data:
+                                self.ctx[var] = str(data[var])
+                            else:
+                                self.ctx[var] = str(data)
+                        except Exception:
+                            pass
+
+
                 else:
                     raise ValueError(f"未知动作：{k}")
 
