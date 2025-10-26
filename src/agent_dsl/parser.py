@@ -21,84 +21,112 @@ class Flow:
 class Program:
     flows: Dict[str, Flow] = field(default_factory=dict)
 
+# 旧：行内 if（保持兼容）
+_IF_GOTO = re.compile(r'^if\s+(.+?)==\s*(.+?)\s+goto\s+(.+?)$')
 
-_IF_HEAD = re.compile(r'^if\s+(.+?)\s*(==|!=|>=|<=|>|<)\s*(.+?)\s*\{$')
-
+# 新：块式 if/elif/else（按“条件整体”保存，运行期求值）
+_IF_HEAD   = re.compile(r'^if\s+(.+?)\s*\{$')
+_ELIF_HEAD = re.compile(r'^elif\s+(.+?)\s*\{$')
 
 def _unquote(val: str) -> str:
-    val = val.strip()
-    if val.startswith('"') and val.endswith('"'):
-        return val[1:-1]
-    return val
-
+    v = val.strip()
+    if v.startswith('"') and v.endswith('"'):
+        return v[1:-1]
+    return v
 
 def parse(text: str) -> Program:
     lines = [ln.rstrip() for ln in text.splitlines()]
-
     prog = Program()
     i = 0
     n = len(lines)
 
     def parse_block_actions() -> List[Action]:
+        """解析直到遇到 '}' 或 下一个 state/flow/elif/else。"""
         nonlocal i
         actions: List[Action] = []
         while i < n:
             raw = lines[i].strip()
-
             if not raw or raw.startswith("#"):
                 i += 1
                 continue
 
-            # 支持 "} else {"：作为子块结束标记
-            if (
-                raw == "}" 
-                or raw.startswith("} else")
-                or raw.startswith("state ")
-                or raw.startswith("flow ")
-            ):
+            # 子块终止信号：} / } elif ... { / } else { / state ... / flow ...
+            if (raw == "}" or raw.startswith("} elif") or raw.startswith("} else")
+                or raw.startswith("state ") or raw.startswith("flow ")):
                 break
 
-            # if-block 头
-            m = _IF_HEAD.match(raw)
-            if m:
-                lhs, op, rhs = m.group(1).strip(), m.group(2), _unquote(m.group(3))
+            # ---- if/elif/else 链处理为 if_chain ----
+            m_if = _IF_HEAD.match(raw)
+            if m_if:
                 i += 1
+                cond_if = m_if.group(1).strip()
 
-                # THEN 块
+                # 解析 then-block
                 then_actions: List[Action] = []
-                if i >= n:
-                    raise ValueError("if 后需要 { 块内容 }")
-
-                # 解析 THEN 内容
                 while i < n and not lines[i].strip().startswith("}"):
                     sub = parse_block_actions()
                     if sub:
                         then_actions.extend(sub)
                     if i < n and lines[i].strip().startswith("}"):
                         break
-
                 if i >= n:
-                    raise ValueError("缺少 if then 的右括号 '}'")
+                    raise ValueError("缺少 if 的右括号 '}'")
 
+                # 消费 if 的右括号
                 cur = lines[i].strip()
                 if cur == "}":
                     i += 1
-                elif cur.startswith("} else"):
+                elif cur.startswith("} elif") or cur.startswith("} else"):
+                    # 不消费，交给下面的 elif/else 逻辑统一处理
                     pass
                 else:
-                    raise ValueError("缺少 if then 的右括号 '}'")
+                    raise ValueError("缺少 if 的右括号 '}'")
 
-                # ELSE 块
-                else_actions: List[Action] | None = None
+                # 收集 elif 链
+                branches = [{"cond": cond_if, "actions": then_actions}]
+                while i < n:
+                    look = lines[i].strip()
+                    # 同行 "} elif xxx {" → 跳过本行，等价于新起一段 "elif xxx {"
+                    if look.startswith("} elif"):
+                        # 提取条件
+                        part = look[len("} elif"):].strip()
+                        if not part.endswith("{"):
+                            raise ValueError("elif 语法错误，应为 `} elif <cond> {`")
+                        cond = part[:-1].strip()
+                        i += 1
+                    elif _ELIF_HEAD.match(look):
+                        m2 = _ELIF_HEAD.match(look)
+                        assert m2 is not None    # 告诉类型检查器这里不会是 None
+                        cond = m2.group(1).strip()
+                        i += 1
+                    else:
+                        break
+
+                    # 解析本次 elif 块
+                    elif_actions: List[Action] = []
+                    while i < n and not lines[i].strip().startswith("}"):
+                        sub = parse_block_actions()
+                        if sub:
+                            elif_actions.extend(sub)
+                        if i < n and lines[i].strip().startswith("}"):
+                            break
+                    if i >= n:
+                        raise ValueError("缺少 elif 的右括号 '}'")
+                    if lines[i].strip() == "}":
+                        i += 1
+                    elif lines[i].strip().startswith("} elif") or lines[i].strip().startswith("} else"):
+                        pass
+                    else:
+                        raise ValueError("缺少 elif 的右括号 '}'")
+                    branches.append({"cond": cond, "actions": elif_actions})
+
+                # 可选 else
+                else_actions = None
                 if i < n:
                     look = lines[i].strip()
-
-                    if look.startswith("} else"):     # ✅ 兼容 "} else {" 同行写法
-                        # 当前这一行已经同时包含了 then 的 '}' 与 else 的 '{'
-                        # 直接跳到 else 块的第一行内容（即下一行）
+                    if look.startswith("} else"):
                         i += 1
                         else_actions = []
-                        # 解析 else 内容直到遇到配对的 '}'
                         while i < n and lines[i].strip() != "}":
                             sub = parse_block_actions()
                             if sub:
@@ -107,10 +135,9 @@ def parse(text: str) -> Program:
                                 break
                         if i >= n or lines[i].strip() != "}":
                             raise ValueError("缺少 else 的右括号 '}'")
-                        i += 1  # 消费 else 的 '}'
-
-                    elif lines[i].strip().startswith("else"):  # ✅ 兼容 "else {" 或 "else" 换行再 "{"
-                        line = lines[i].strip()
+                        i += 1
+                    elif look.startswith("else"):
+                        line = look
                         if line == "else {":
                             i += 1
                         elif line == "else":
@@ -120,7 +147,6 @@ def parse(text: str) -> Program:
                             i += 1
                         else:
                             raise ValueError("else 用法：else { ... }")
-
                         else_actions = []
                         while i < n and lines[i].strip() != "}":
                             sub = parse_block_actions()
@@ -130,32 +156,27 @@ def parse(text: str) -> Program:
                                 break
                         if i >= n or lines[i].strip() != "}":
                             raise ValueError("缺少 else 的右括号 '}'")
-                        i += 1  # 消费 else 的 '}'
+                        i += 1
 
-
-                lhs, op, rhs = m.group(1).strip(), m.group(2), m.group(3).strip()
-
-                actions.append(Action(
-                    kind="if_block",
-                    args={"left": lhs, "op": op, "right": rhs, "then": then_actions, "else": else_actions}
-                ))
+                actions.append(Action("if_chain", {
+                    "branches": branches,   # list of {"cond": str, "actions": List[Action]}
+                    "else": else_actions    # or None
+                }))
                 continue
 
-            # reply
+            # ---- 普通语句 ----
             if raw.startswith("reply "):
                 val = _unquote(raw[len("reply "):])
                 actions.append(Action("reply", {"text": val}))
                 i += 1
                 continue
 
-            # goto
             if raw.startswith("goto "):
                 target = raw.split(" ", 1)[1].strip()
                 actions.append(Action("goto", {"target": target}))
                 i += 1
                 continue
 
-            # ask
             if raw.startswith("ask "):
                 rest = raw[len("ask "):].strip()
                 var, prompt = rest.split(" ", 1)
@@ -163,7 +184,6 @@ def parse(text: str) -> Program:
                 i += 1
                 continue
 
-            # set
             if raw.startswith("set "):
                 rest = raw[len("set "):].strip()
                 if "=" not in rest:
@@ -173,22 +193,14 @@ def parse(text: str) -> Program:
                 i += 1
                 continue
 
-            # legacy 行内 if
-            if raw.startswith("if "):
-                rest = raw[len("if "):].strip()
-                if " goto " not in rest or "==" not in rest:
-                    raise ValueError('if 语法: if <var> == "value" goto <state>')
-                cond, target = rest.split(" goto ", 1)
-                left, right = cond.split("==", 1)
-                actions.append(Action("if_goto", {
-                    "left": left.strip(),
-                    "right": _unquote(right),
-                    "target": target.strip()
-                }))
+            # 旧式行内 if_goto（保留兼容）
+            m_legacy = _IF_GOTO.match(raw)
+            if m_legacy:
+                left, right, target = m_legacy.group(1).strip(), _unquote(m_legacy.group(2)), m_legacy.group(3).strip()
+                actions.append(Action("if_goto", {"left": left, "right": right, "target": target}))
                 i += 1
                 continue
 
-            # save
             if raw.startswith("save "):
                 rest = raw[len("save "):].strip()
                 if " to " not in rest:
@@ -198,7 +210,6 @@ def parse(text: str) -> Program:
                 i += 1
                 continue
 
-            # load
             if raw.startswith("load "):
                 rest = raw[len("load "):].strip()
                 if " from " not in rest:
@@ -212,7 +223,6 @@ def parse(text: str) -> Program:
 
         return actions
 
-    i = 0
     while i < n:
         raw = lines[i].strip()
         if not raw or raw.startswith("#"):
@@ -224,6 +234,7 @@ def parse(text: str) -> Program:
             flow = Flow(flow_name)
             prog.flows[flow_name] = flow
             i += 1
+            # 读 state
             while i < n:
                 ln = lines[i].strip()
                 if ln.startswith("state "):
@@ -245,5 +256,4 @@ def parse(text: str) -> Program:
 
     if not prog.flows:
         raise ValueError("至少需要一个 flow")
-
     return prog
