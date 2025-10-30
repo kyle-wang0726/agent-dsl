@@ -1,0 +1,40 @@
+<!-- templates/index.html -->
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="utf-8" />
+    <title>Agent-DSL Web UI</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link href="/static/style.css" rel="stylesheet" />
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>Agent-DSL Web UI</h1>
+            <div class="settings">
+                <label>
+                    DSL 路径：
+                    <input id="dslPath" type="text" value="examples/carrier.dsl" />
+                </label>
+                <label class="chk">
+                    <input id="useLLM" type="checkbox" checked />
+                    启用 LLM 兜底
+                </label>
+                <button id="btnStart">启动会话</button>
+            </div>
+        </header>
+
+        <main id="chat"></main>
+
+        <footer>
+            <input id="msg" type="text" placeholder="在这里输入..." />
+            <button id="btnSend">发送</button>
+        </footer>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+
+</html>
