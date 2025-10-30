@@ -319,16 +319,20 @@ class Engine:
                 self.ctx[a["var"]] = "" if val is None else str(val)
 
             elif k == "ask":
-                # 在提示之前，把已有回复立即输出，保证顺序正确
+                # 在提示之前，把已有 reply 立刻输出，保证显示顺序正确
                 if buffer:
                     for line in buffer:
                         self.printer(line)
                     buffer.clear()
 
                 var, prompt = a["var"], a["prompt"]
-                if var not in self.ctx:
-                    self.ctx[var] = self.ask_fn(var, prompt) if self.ask_fn else input(prompt)
-                self._last_asked_var = var  # 记录最后一次问到哪个变量
+
+                # ✅ 关键改动：总是重新询问并覆盖旧值（不再依赖是否为空/是否存在）
+                self.ctx[var] = self.ask_fn(var, prompt) if self.ask_fn else input(prompt)
+
+                self._last_asked_var = var  # 记录最近一次问到的变量，供 LLM 兜底参考
+
+
 
             elif k == "if_goto":
                 left = self.ctx.get(a["left"], "")
@@ -409,20 +413,22 @@ class Engine:
             for line in buffer:
                 yield line
 
-            # 若还没有跳转 → 尝试 LLM 兜底（仅当本状态确实问过一次）
+            # ✅ 若本轮没有 ask 且也没有显式跳转：视为终止（比如 end 状态）
+            if target is None and self._last_asked_var is None:
+                break
+
+            # 若还没有跳转 → 先尝试 LLM 兜底（仅当本轮确实 ask 过）
             if target is None and self.use_llm and self.llm_client and self._last_asked_var:
                 user_text = self.ctx.get(self._last_asked_var, "")
                 suggestion = self.llm_client.classify_intent(
-                    user_text,
-                    list(self.flow.states.keys()),
-                    exclude=[self.state_name],
+                    user_text, list(self.flow.states.keys()), exclude=[self.state_name],
                 )
                 if suggestion and suggestion in self.flow.states and suggestion != self.state_name:
                     yield f"(LLM判定意图：{suggestion})"
                     target = suggestion
 
-            # 仍未跳转：同一状态停留>=2 次 → 兜底到 fallback（若存在）
-            if target is None and self.fallback_state and self._visits.get(self.state_name, 0) >= 2:
+            # 仍未跳转：若本轮 ask 过且存在 fallback，则立即兜底过去
+            if target is None and self._last_asked_var is not None and self.fallback_state:
                 target = self.fallback_state
 
             if target is not None:
